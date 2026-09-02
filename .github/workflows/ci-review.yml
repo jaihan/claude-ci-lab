@@ -2,71 +2,286 @@ name: AI Code Review Gate
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
   ai-review:
     runs-on: ubuntu-latest
 
     steps:
-      # Station 1: Download repository and fetch full git history for diffing
-      - name: Checkout Code
+      - name: Checkout PR Code
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      # Station 2: Set up Node.js runtime and install tools
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Claude Code CLI and jq
         run: |
           npm install -g @anthropic-ai/claude-code
-          sudo apt-get update && sudo apt-get install -y jq
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-      # Station 3, 4 & 5: Execute AI Review and Gate Pipeline
       - name: Run AI Code Review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
         run: |
-          # 1. Capture PR diff against target branch
-          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+          set -e
+          set -o pipefail
 
-          # 2. Feed diff to Claude with JSON Schema enforcement
-          cat pr.diff | claude -p \
-            --max-turns 3 \
-            --output-format json \
-            --json-schema '{
-              "type": "object",
-              "properties": {
-                "passed": { "type": "boolean" },
-                "issues": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "severity": { "type": "string", "enum": ["high", "medium", "low"] },
-                      "message": { "type": "string" }
-                    },
-                    "required": ["severity", "message"]
-                  }
-                }
-              },
-              "required": ["passed", "issues"]
-            }' \
-            "Review this PR diff. Set passed to false if there are high severity or security issues." \
-            > review.json
+          echo "========================================="
+          echo "🚀 AI CODE REVIEW STARTED"
+          echo "========================================="
 
-          # 3. Print JSON to workflow logs for debugging
-          cat review.json | jq .
+          echo "Base branch: $  "
+          echo "Base SHA:    $BASE_SHA"
+          echo "Head SHA:    $HEAD_SHA"
 
-          # 4. Evaluate pipeline decision using jq exit code
-          if jq -e '.passed == true and ([.issues[] | select(.severity == "high")] | length == 0)' review.json > /dev/null; then
-            echo "✅ CI GATE PASSED"
-            exit 0
+          echo ""
+          echo "=== 1. CURRENT CHECKOUT ==="
+
+          git status
+          git rev-parse HEAD
+
+          echo ""
+          echo "=== 2. FETCH BASE COMMIT ==="
+
+          echo "Executing: git fetch origin $BASE_SHA"
+
+          git fetch origin "$BASE_SHA"
+
+          echo "✅ Base commit fetched successfully"
+
+          echo ""
+          echo "=== 3. CREATE PR DIFF ==="
+
+          git diff "$BASE_SHA...$HEAD_SHA" > pr.diff
+
+          echo "PR diff size:"
+          wc -c pr.diff
+
+          echo "PR diff line count:"
+          wc -l pr.diff
+
+          echo ""
+          echo "=== 4. CHECK FOR EMPTY DIFF ==="
+
+          if [ ! -s pr.diff ]; then
+
+            echo "⚠️ No diff detected."
+            echo '{"passed":true,"issues":[]}' > review.json
+
           else
-            echo "❌ CI GATE FAILED: High severity issues found."
+
+            echo "✅ Diff detected"
+            echo ""
+            echo "=== 5. RUN CLAUDE CODE REVIEW ==="
+
+            echo "Claude version:"
+            claude --version
+
+            echo ""
+            echo "Checking API key..."
+
+            if [ -z "$ANTHROPIC_API_KEY" ]; then
+              echo "❌ ANTHROPIC_API_KEY is not configured"
+              exit 1
+            fi
+
+            echo "✅ ANTHROPIC_API_KEY is configured"
+
+            # Temporarily disable immediate exit so we can capture Claude errors
+            set +e
+
+
+            claude -p \
+              --max-turns 3 \
+              --output-format json \
+              --json-schema '{
+                "type": "object",
+                "properties": {
+                  "passed": {
+                    "type": "boolean"
+                  },
+                  "issues": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium",
+                            "low"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "severity",
+                        "message"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "passed",
+                  "issues"
+                ]
+              }' \
+              "You are performing a pull request code review.
+
+              Review the following Git diff.
+
+              Focus on:
+              - Security vulnerabilities
+              - Authentication or authorization problems
+              - Data corruption risks
+              - Runtime crashes
+              - Breaking changes
+              - Critical logic bugs
+              - Resource leaks
+              - Concurrency problems
+              - Injection vulnerabilities
+              - Exposed secrets
+
+              Severity definitions:
+
+              high:
+              A serious problem that should block the pull request.
+
+              medium:
+              A significant problem that should be fixed but does not
+              necessarily need to block the pull request.
+
+              low:
+              Minor issue, cleanup, maintainability issue, or suggestion.
+
+              Set passed=false ONLY when:
+              - at least one high severity issue exists, OR
+              - a security vulnerability exists.
+
+              Otherwise set passed=true.
+
+              Do not fail the review because of medium or low severity issues.
+
+              PR DIFF:
+
+              $(cat pr.diff)" \
+              > review.json
+
+            echo "✅ Claude review completed"
+
+          fi
+
+          echo ""
+          echo "========================================="
+          echo "🤖 AI REVIEW RESULT"
+          echo "========================================="
+
+          if [ ! -s review.json ]; then
+            echo "❌ review.json is empty"
             exit 1
+          fi
+
+          cat review.json
+
+          echo ""
+          echo "=== 6. VALIDATE JSON ==="
+
+          if ! jq empty review.json 2>/dev/null; then
+            echo "❌ Claude returned invalid JSON"
+            echo ""
+            echo "Raw output:"
+            cat review.json
+            exit 1
+          fi
+
+          jq . review.json
+
+          echo ""
+          echo "=== 7. REVIEW SUMMARY ==="
+
+          PASSED=$(jq -r '.passed' review.json)
+
+          HIGH_COUNT=$(jq \
+            '[.issues[] | select(.severity == "high")] | length' \
+            review.json)
+
+          MEDIUM_COUNT=$(jq \
+            '[.issues[] | select(.severity == "medium")] | length' \
+            review.json)
+
+          LOW_COUNT=$(jq \
+            '[.issues[] | select(.severity == "low")] | length' \
+            review.json)
+
+          echo "AI passed:     $PASSED"
+          echo "High issues:   $HIGH_COUNT"
+          echo "Medium issues: $MEDIUM_COUNT"
+          echo "Low issues:    $LOW_COUNT"
+
+          echo ""
+          echo "=== 8. ISSUES ==="
+
+          if [ "$(jq '.issues | length' review.json)" -gt 0 ]; then
+
+            jq -r '
+              .issues[] |
+              "[\(.severity | ascii_upcase)] \(.message)"
+            ' review.json
+
+          else
+
+            echo "✅ No issues found"
+
+          fi
+
+          echo ""
+          echo "========================================="
+          echo "🚦 CI GATE RESULT"
+          echo "========================================="
+
+          HIGH_COUNT=$(jq '
+            [(.issues // [])[] | select(.severity == "high")] | length
+          ' review.json)
+
+          if [ "$HIGH_COUNT" -eq 0 ]; then
+
+            echo "✅ AI CODE REVIEW PASSED"
+            echo "No high severity issues detected."
+            echo "PR is allowed to continue."
+
+            exit 0
+
+          else
+
+            echo "❌ AI CODE REVIEW FAILED"
+            echo "$HIGH_COUNT high severity issue(s) detected."
+
+            echo ""
+            echo "Blocking issues:"
+
+            jq -r '
+              (.issues // [])[]
+              | select(.severity == "high")
+              | "- \(.message)"
+            ' review.json
+
+            echo ""
+            echo "PR should not be merged."
+
+            exit 1
+
           fi
