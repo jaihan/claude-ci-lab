@@ -28,8 +28,9 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # 1. Explicitly fetch base branch
-          git fetch origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }} || git fetch origin ${{ github.base_ref }}
+          # 1. Fetch target branch safely
+          echo "Executing: git fetch origin ${{ github.base_ref }}"
+          git fetch origin ${{ github.base_ref }} || true
 
           # 2. Capture PR diff against target branch
           git diff origin/${{ github.base_ref }}...HEAD > pr.diff || touch pr.diff
