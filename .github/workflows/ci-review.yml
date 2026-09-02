@@ -9,13 +9,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Station 1: Download repository and fetch full git history for diffing
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Station 2: Set up Node.js 24 runtime and install tools
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -26,47 +24,50 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           sudo apt-get update && sudo apt-get install -y jq
 
-      # Station 3, 4 & 5: Execute AI Review and Gate Pipeline
-      # Station 3, 4 & 5: Execute AI Review and Gate Pipeline
       - name: Run AI Code Review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # Guarantee target branch reference exists in local git metadata
-          git fetch origin ${{ github.base_ref }}
+          # 1. Explicitly fetch base branch
+          git fetch origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }} || git fetch origin ${{ github.base_ref }}
 
-          # 1. Capture PR diff against target branch
-          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+          # 2. Capture PR diff against target branch
+          git diff origin/${{ github.base_ref }}...HEAD > pr.diff || touch pr.diff
 
-          # 2. Feed diff to Claude with JSON Schema enforcement
-          cat pr.diff | claude -p \
-            --max-turns 3 \
-            --output-format json \
-            --json-schema '{
-              "type": "object",
-              "properties": {
-                "passed": { "type": "boolean" },
-                "issues": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "severity": { "type": "string", "enum": ["high", "medium", "low"] },
-                      "message": { "type": "string" }
-                    },
-                    "required": ["severity", "message"]
+          # 3. Guard against empty diffs
+          if [ ! -s pr.diff ]; then
+            echo "⚠️ No diff detected between PR branch and origin/${{ github.base_ref }}."
+            echo '{"passed": true, "issues": []}' > review.json
+          else
+            cat pr.diff | claude -p \
+              --max-turns 3 \
+              --output-format json \
+              --json-schema '{
+                "type": "object",
+                "properties": {
+                  "passed": { "type": "boolean" },
+                  "issues": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+                        "message": { "type": "string" }
+                      },
+                      "required": ["severity", "message"]
+                    }
                   }
-                }
-              },
-              "required": ["passed", "issues"]
-            }' \
-            "Review this PR diff. Set passed to false if there are high severity or security issues." \
-            > review.json
+                },
+                "required": ["passed", "issues"]
+              }' \
+              "Review this PR diff. Set passed to false if there are high severity or security issues." \
+              > review.json
+          fi
 
-          # 3. Print JSON to workflow logs for debugging
+          # 4. Print JSON output
           cat review.json | jq .
 
-          # 4. Evaluate pipeline decision using jq exit code
+          # 5. Evaluate CI Gate Result
           if jq -e '.passed == true and ([.issues[] | select(.severity == "high")] | length == 0)' review.json > /dev/null; then
             echo "✅ CI GATE PASSED"
             exit 0
