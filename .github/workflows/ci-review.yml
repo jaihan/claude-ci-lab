@@ -2,16 +2,17 @@ name: AI Code Review Gate
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
   ai-review:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout PR Code
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -22,57 +23,236 @@ jobs:
       - name: Install Claude Code CLI and jq
         run: |
           npm install -g @anthropic-ai/claude-code
-          sudo apt-get update && sudo apt-get install -y jq
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - name: Run AI Code Review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
         run: |
-          # 1. Fetch target branch safely
-          echo "Executing: git fetch origin ${{ github.base_ref }}"
-          git fetch origin ${{ github.base_ref }} || true
+          set -e
+          set -o pipefail
 
-          # 2. Capture PR diff against target branch
-          git diff origin/${{ github.base_ref }}...HEAD > pr.diff || touch pr.diff
+          echo "========================================="
+          echo "🚀 AI CODE REVIEW STARTED"
+          echo "========================================="
 
-          # 3. Guard against empty diffs
+          echo "Base branch: $BASE_REF"
+          echo "Base SHA:    $BASE_SHA"
+          echo "Head SHA:    $HEAD_SHA"
+
+          echo ""
+          echo "=== 1. CURRENT CHECKOUT ==="
+
+          git status
+          git rev-parse HEAD
+
+          echo ""
+          echo "=== 2. FETCH BASE COMMIT ==="
+
+          echo "Executing: git fetch origin $BASE_SHA"
+
+          git fetch origin "$BASE_SHA"
+
+          echo "✅ Base commit fetched successfully"
+
+          echo ""
+          echo "=== 3. CREATE PR DIFF ==="
+
+          git diff "$BASE_SHA...$HEAD_SHA" > pr.diff
+
+          echo "PR diff size:"
+          wc -c pr.diff
+
+          echo "PR diff line count:"
+          wc -l pr.diff
+
+          echo ""
+          echo "=== 4. CHECK FOR EMPTY DIFF ==="
+
           if [ ! -s pr.diff ]; then
-            echo "⚠️ No diff detected between PR branch and origin/${{ github.base_ref }}."
-            echo '{"passed": true, "issues": []}' > review.json
+
+            echo "⚠️ No diff detected."
+            echo '{"passed":true,"issues":[]}' > review.json
+
           else
-            cat pr.diff | claude -p \
+
+            echo "✅ Diff detected"
+            echo ""
+            echo "=== 5. RUN CLAUDE CODE REVIEW ==="
+
+            claude -p \
               --max-turns 3 \
               --output-format json \
               --json-schema '{
                 "type": "object",
                 "properties": {
-                  "passed": { "type": "boolean" },
+                  "passed": {
+                    "type": "boolean"
+                  },
                   "issues": {
                     "type": "array",
                     "items": {
                       "type": "object",
                       "properties": {
-                        "severity": { "type": "string", "enum": ["high", "medium", "low"] },
-                        "message": { "type": "string" }
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium",
+                            "low"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
                       },
-                      "required": ["severity", "message"]
+                      "required": [
+                        "severity",
+                        "message"
+                      ]
                     }
                   }
                 },
-                "required": ["passed", "issues"]
+                "required": [
+                  "passed",
+                  "issues"
+                ]
               }' \
-              "Review this PR diff. Set passed to false if there are high severity or security issues." \
+              "You are performing a pull request code review.
+
+              Review the following Git diff.
+
+              Focus on:
+              - Security vulnerabilities
+              - Authentication or authorization problems
+              - Data corruption risks
+              - Runtime crashes
+              - Breaking changes
+              - Critical logic bugs
+              - Resource leaks
+              - Concurrency problems
+              - Injection vulnerabilities
+              - Exposed secrets
+
+              Severity definitions:
+
+              high:
+              A serious problem that should block the pull request.
+
+              medium:
+              A significant problem that should be fixed but does not
+              necessarily need to block the pull request.
+
+              low:
+              Minor issue, cleanup, maintainability issue, or suggestion.
+
+              Set passed=false ONLY when:
+              - at least one high severity issue exists, OR
+              - a security vulnerability exists.
+
+              Otherwise set passed=true.
+
+              Do not fail the review because of medium or low severity issues.
+
+              PR DIFF:
+
+              $(cat pr.diff)" \
               > review.json
+
+            echo "✅ Claude review completed"
+
           fi
 
-          # 4. Print JSON output
-          cat review.json | jq .
+          echo ""
+          echo "========================================="
+          echo "🤖 AI REVIEW RESULT"
+          echo "========================================="
 
-          # 5. Evaluate CI Gate Result
-          if jq -e '.passed == true and ([.issues[] | select(.severity == "high")] | length == 0)' review.json > /dev/null; then
-            echo "✅ CI GATE PASSED"
-            exit 0
-          else
-            echo "❌ CI GATE FAILED: High severity issues found."
+          if [ ! -s review.json ]; then
+            echo "❌ review.json is empty"
             exit 1
+          fi
+
+          cat review.json
+
+          echo ""
+          echo "=== 6. VALIDATE JSON ==="
+
+          if ! jq empty review.json 2>/dev/null; then
+            echo "❌ Claude returned invalid JSON"
+            echo ""
+            echo "Raw output:"
+            cat review.json
+            exit 1
+          fi
+
+          jq . review.json
+
+          echo ""
+          echo "=== 7. REVIEW SUMMARY ==="
+
+          PASSED=$(jq -r '.passed' review.json)
+
+          HIGH_COUNT=$(jq \
+            '[.issues[] | select(.severity == "high")] | length' \
+            review.json)
+
+          MEDIUM_COUNT=$(jq \
+            '[.issues[] | select(.severity == "medium")] | length' \
+            review.json)
+
+          LOW_COUNT=$(jq \
+            '[.issues[] | select(.severity == "low")] | length' \
+            review.json)
+
+          echo "AI passed:     $PASSED"
+          echo "High issues:   $HIGH_COUNT"
+          echo "Medium issues: $MEDIUM_COUNT"
+          echo "Low issues:    $LOW_COUNT"
+
+          echo ""
+          echo "=== 8. ISSUES ==="
+
+          if [ "$(jq '.issues | length' review.json)" -gt 0 ]; then
+
+            jq -r '
+              .issues[] |
+              "[\(.severity | ascii_upcase)] \(.message)"
+            ' review.json
+
+          else
+
+            echo "✅ No issues found"
+
+          fi
+
+          echo ""
+          echo "========================================="
+          echo "🚦 CI GATE RESULT"
+          echo "========================================="
+
+          if jq -e '
+            .passed == true
+            and
+            ([.issues[] | select(.severity == "high")] | length == 0)
+          ' review.json > /dev/null; then
+
+            echo "✅ AI CODE REVIEW PASSED"
+            echo "PR is allowed to continue."
+
+            exit 0
+
+          else
+
+            echo "❌ AI CODE REVIEW FAILED"
+            echo "High severity or security issue detected."
+            echo "PR should not be merged."
+
+            exit 1
+
           fi
