@@ -41,7 +41,7 @@ jobs:
           echo "🚀 AI CODE REVIEW STARTED"
           echo "========================================="
 
-          echo "Base branch: $BASE_REF"
+          echo "Base branch: $  "
           echo "Base SHA:    $BASE_SHA"
           echo "Head SHA:    $HEAD_SHA"
 
@@ -84,6 +84,23 @@ jobs:
             echo "✅ Diff detected"
             echo ""
             echo "=== 5. RUN CLAUDE CODE REVIEW ==="
+
+            echo "Claude version:"
+            claude --version
+
+            echo ""
+            echo "Checking API key..."
+
+            if [ -z "$ANTHROPIC_API_KEY" ]; then
+              echo "❌ ANTHROPIC_API_KEY is not configured"
+              exit 1
+            fi
+
+            echo "✅ ANTHROPIC_API_KEY is configured"
+
+            # Temporarily disable immediate exit so we can capture Claude errors
+            set +e
+
 
             claude -p \
               --max-turns 3 \
