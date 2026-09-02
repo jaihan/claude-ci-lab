@@ -254,7 +254,7 @@ jobs:
           echo "========================================="
 
           HIGH_COUNT=$(jq '
-            [.issues[] | select(.severity == "high")] | length
+            [(.issues // [])[] | select(.severity == "high")] | length
           ' review.json)
 
           if [ "$HIGH_COUNT" -eq 0 ]; then
@@ -274,7 +274,7 @@ jobs:
             echo "Blocking issues:"
 
             jq -r '
-              .issues[]
+              (.issues // [])[]
               | select(.severity == "high")
               | "- \(.message)"
             ' review.json
