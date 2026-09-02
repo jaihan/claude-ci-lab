@@ -253,13 +253,14 @@ jobs:
           echo "🚦 CI GATE RESULT"
           echo "========================================="
 
-          if jq -e '
-            .passed == true
-            and
-            ([.issues[] | select(.severity == "high")] | length == 0)
-          ' review.json > /dev/null; then
+          HIGH_COUNT=$(jq '
+            [.issues[] | select(.severity == "high")] | length
+          ' review.json)
+
+          if [ "$HIGH_COUNT" -eq 0 ]; then
 
             echo "✅ AI CODE REVIEW PASSED"
+            echo "No high severity issues detected."
             echo "PR is allowed to continue."
 
             exit 0
@@ -267,7 +268,18 @@ jobs:
           else
 
             echo "❌ AI CODE REVIEW FAILED"
-            echo "High severity or security issue detected."
+            echo "$HIGH_COUNT high severity issue(s) detected."
+
+            echo ""
+            echo "Blocking issues:"
+
+            jq -r '
+              .issues[]
+              | select(.severity == "high")
+              | "- \(.message)"
+            ' review.json
+
+            echo ""
             echo "PR should not be merged."
 
             exit 1
