@@ -28,7 +28,7 @@ jobs:
 
       # Station 3, 4 & 5: Execute AI Review and Gate Pipeline
       # Station 3, 4 & 5: Execute AI Review and Gate Pipeline
-     
+      - name: Run AI Code Review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
