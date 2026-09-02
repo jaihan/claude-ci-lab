@@ -1,5 +1,4 @@
 name: AI Code Review Gate
-
 on:
   pull_request:
     branches: [ main, master ]
@@ -15,11 +14,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Station 2: Set up Node.js runtime and install tools
+      # Station 2: Set up Node.js 24 runtime and install tools
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Claude Code CLI and jq
         run: |
