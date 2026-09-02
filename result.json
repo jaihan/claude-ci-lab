@@ -1,0 +1,13 @@
+{
+  "passed": false,
+  "issues": [
+    {
+      "severity": "high",
+      "message": "Password exposed"
+    },
+    {
+      "severity": "low",
+      "message": "Improve variable name"
+    }
+  ]
+}

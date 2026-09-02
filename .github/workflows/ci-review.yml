@@ -1,0 +1,72 @@
+name: AI Code Review Gate
+
+on:
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Station 1: Download repository and fetch full git history for diffing
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Station 2: Set up Node.js runtime and install tools
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI and jq
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          sudo apt-get update && sudo apt-get install -y jq
+
+      # Station 3, 4 & 5: Execute AI Review and Gate Pipeline
+      - name: Run AI Code Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # 1. Capture PR diff against target branch
+          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+
+          # 2. Feed diff to Claude with JSON Schema enforcement
+          cat pr.diff | claude -p \
+            --max-turns 3 \
+            --output-format json \
+            --json-schema '{
+              "type": "object",
+              "properties": {
+                "passed": { "type": "boolean" },
+                "issues": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+                      "message": { "type": "string" }
+                    },
+                    "required": ["severity", "message"]
+                  }
+                }
+              },
+              "required": ["passed", "issues"]
+            }' \
+            "Review this PR diff. Set passed to false if there are high severity or security issues." \
+            > review.json
+
+          # 3. Print JSON to workflow logs for debugging
+          cat review.json | jq .
+
+          # 4. Evaluate pipeline decision using jq exit code
+          if jq -e '.passed == true and ([.issues[] | select(.severity == "high")] | length == 0)' review.json > /dev/null; then
+            echo "✅ CI GATE PASSED"
+            exit 0
+          else
+            echo "❌ CI GATE FAILED: High severity issues found."
+            exit 1
+          fi

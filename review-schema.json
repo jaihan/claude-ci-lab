@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "passed": {
+      "type": "boolean"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["severity", "message"]
+      }
+    }
+  },
+  "required": ["passed", "issues"]
+}
