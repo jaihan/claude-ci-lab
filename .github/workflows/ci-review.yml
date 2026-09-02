@@ -6,6 +6,8 @@ on:
 jobs:
   ai-review:
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
 
     steps:
       # Station 1: Download repository and fetch full git history for diffing
